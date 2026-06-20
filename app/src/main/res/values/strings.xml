@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Audio Equalizer</string>
+    <string name="master_switch">Global Equalizer</string>
+    <string name="status_on">ON — applying to system audio</string>
+    <string name="status_off">OFF</string>
+    <string name="compatibility_warning">This device may restrict system-wide audio effects (OEM sound enhancer conflict).</string>
+</resources>
