@@ -5,17 +5,27 @@ import android.media.audiofx.Equalizer
 import android.media.audiofx.PresetReverb
 import android.media.audiofx.Virtualizer
 import android.util.Log
-import javax.inject.Inject
-import javax.inject.Singleton
 
 /**
- * Attaches Android AudioEffects to the global output mix (session 0).
- * This is the officially documented technique used by apps like Wavelet/Poweramp
- * to apply EQ to ALL audio on the device (Spotify, YouTube, Chrome, etc.)
- * without root, via android.media.audiofx.* with sessionId = 0.
+ * గ్లోబల్ (సెషన్ 0) ఆడియో ఎఫెక్ట్స్ ఇంజిన్.
+ *
+ * ఫిక్స్ చేసిన పాయింట్లు:
+ * 1. ప్రతి ఎఫెక్ట్ (Equalizer / BassBoost / Virtualizer / PresetReverb) విడివిడిగా
+ *    try-catch లో wrap చేయబడింది. ఒక ఎఫెక్ట్ ఈ డివైజ్‌లో సపోర్ట్ కాకపోయినా,
+ *    మిగతా ఎఫెక్ట్‌లు పనిచేస్తూనే ఉంటాయి — మొత్తం engine క్రాష్ కాదు.
+ * 2. setBandLevel / setBassBoostStrength / setVirtualizerStrength / setReverbPreset
+ *    లాంటి runtime కాల్స్ కూడా try-catch తో wrap చేయబడ్డాయి, ఎందుకంటే ఎఫెక్ట్ object
+ *    null కాకపోయినా, దాని మీద కాల్ చేసేటప్పుడు RuntimeException వచ్చే అవకాశం ఉంది
+ *    (కొన్ని OEM custom ROMs లో ఇది జరుగుతుంది).
+ * 3. isSupported ఇప్పుడు "కనీసం ఒక ఎఫెక్ట్ అయినా పనిచేసిందా" అనే దాన్ని సూచిస్తుంది,
+ *    కాబట్టి పాక్షికంగా సపోర్ట్ ఉన్న డివైజ్‌లలో కూడా యాప్ ఉపయోగపడుతుంది.
  */
-@Singleton
-class GlobalAudioSessionEngine @Inject constructor() {
+class GlobalAudioSessionEngine {
+
+    companion object {
+        private const val TAG = "GlobalAudioEngine"
+        private const val GLOBAL_SESSION_ID = 0
+    }
 
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
@@ -25,35 +35,77 @@ class GlobalAudioSessionEngine @Inject constructor() {
     var isEnabled: Boolean = false
         private set
 
-    var isSupported: Boolean = true
+    var isSupported: Boolean = false
         private set
 
-    fun start() {
-        try {
-            equalizer = Equalizer(0, 0).apply { enabled = true }
-            bassBoost = BassBoost(0, 0).apply { enabled = true }
-            virtualizer = Virtualizer(0, 0).apply { enabled = true }
-            presetReverb = PresetReverb(0, 0).apply { enabled = true }
-            isEnabled = true
-            isSupported = true
-        } catch (e: Exception) {
-            // Some OEMs (Samsung/MIUI) or DRM-protected audio paths block session 0 effects.
-            Log.e("GlobalAudioEngine", "Global session unsupported on this device", e)
-            isSupported = false
-            isEnabled = false
+    /** equalizer ఇంకా క్రియేట్ కాకపోతే మాత్రమే start() ని కాల్ చేస్తుంది. */
+    fun ensureStarted() {
+        if (equalizer == null) {
+            start()
         }
     }
 
-    /** Starts the engine if it isn't already running (used by screens that need live effects). */
-    fun ensureStarted() {
-        if (equalizer == null) start()
+    fun start() {
+        var anySucceeded = false
+
+        // ---- Equalizer ----
+        try {
+            val eq = Equalizer(0, GLOBAL_SESSION_ID)
+            eq.enabled = true
+            equalizer = eq
+            anySucceeded = true
+        } catch (t: Throwable) {
+            Log.e(TAG, "Equalizer unsupported on this device", t)
+            equalizer = null
+        }
+
+        // ---- BassBoost ----
+        try {
+            val bb = BassBoost(0, GLOBAL_SESSION_ID)
+            bb.enabled = true
+            bassBoost = bb
+            anySucceeded = true
+        } catch (t: Throwable) {
+            Log.e(TAG, "BassBoost unsupported on this device", t)
+            bassBoost = null
+        }
+
+        // ---- Virtualizer ----
+        try {
+            val vr = Virtualizer(0, GLOBAL_SESSION_ID)
+            vr.enabled = true
+            virtualizer = vr
+            anySucceeded = true
+        } catch (t: Throwable) {
+            Log.e(TAG, "Virtualizer unsupported on this device", t)
+            virtualizer = null
+        }
+
+        // ---- PresetReverb ----
+        try {
+            val pr = PresetReverb(0, GLOBAL_SESSION_ID)
+            pr.enabled = true
+            presetReverb = pr
+            anySucceeded = true
+        } catch (t: Throwable) {
+            Log.e(TAG, "PresetReverb unsupported on this device", t)
+            presetReverb = null
+        }
+
+        isSupported = anySucceeded
+        isEnabled = anySucceeded
+
+        if (!anySucceeded) {
+            Log.e(TAG, "Global session unsupported on this device — no effect could be created")
+        }
     }
 
     fun stop() {
-        equalizer?.release()
-        bassBoost?.release()
-        virtualizer?.release()
-        presetReverb?.release()
+        safeRelease("Equalizer") { equalizer?.release() }
+        safeRelease("BassBoost") { bassBoost?.release() }
+        safeRelease("Virtualizer") { virtualizer?.release() }
+        safeRelease("PresetReverb") { presetReverb?.release() }
+
         equalizer = null
         bassBoost = null
         virtualizer = null
@@ -61,30 +113,88 @@ class GlobalAudioSessionEngine @Inject constructor() {
         isEnabled = false
     }
 
-    fun setBandLevel(band: Short, levelMillibels: Short) {
-        equalizer?.setBandLevel(band, levelMillibels)
+    fun getMinBandLevel(): Short {
+        return try {
+            equalizer?.bandLevelRange?.getOrNull(0) ?: -1500
+        } catch (t: Throwable) {
+            Log.e(TAG, "getMinBandLevel failed", t)
+            -1500
+        }
     }
 
-    fun getNumberOfBands(): Short = equalizer?.numberOfBands ?: 0
+    fun getMaxBandLevel(): Short {
+        return try {
+            equalizer?.bandLevelRange?.getOrNull(1) ?: 1500
+        } catch (t: Throwable) {
+            Log.e(TAG, "getMaxBandLevel failed", t)
+            1500
+        }
+    }
 
-    fun getBandFreqRange(band: Short): IntArray =
-        equalizer?.getBandFreqRange(band) ?: intArrayOf(0, 0)
+    fun getNumberOfBands(): Short {
+        return try {
+            equalizer?.numberOfBands ?: 0
+        } catch (t: Throwable) {
+            Log.e(TAG, "getNumberOfBands failed", t)
+            0
+        }
+    }
 
-    fun getBandLevel(band: Short): Short = equalizer?.getBandLevel(band) ?: 0
+    fun getBandFreqRange(band: Short): IntArray {
+        return try {
+            equalizer?.getBandFreqRange(band) ?: intArrayOf(0, 0)
+        } catch (t: Throwable) {
+            Log.e(TAG, "getBandFreqRange failed", t)
+            intArrayOf(0, 0)
+        }
+    }
 
-    fun getMinBandLevel(): Short = equalizer?.bandLevelRange?.getOrNull(0) ?: -1500
+    fun getBandLevel(band: Short): Short {
+        return try {
+            equalizer?.getBandLevel(band) ?: 0
+        } catch (t: Throwable) {
+            Log.e(TAG, "getBandLevel failed", t)
+            0
+        }
+    }
 
-    fun getMaxBandLevel(): Short = equalizer?.bandLevelRange?.getOrNull(1) ?: 1500
+    fun setBandLevel(band: Short, level: Short) {
+        try {
+            equalizer?.setBandLevel(band, level)
+        } catch (t: Throwable) {
+            Log.e(TAG, "setBandLevel failed", t)
+        }
+    }
 
     fun setBassBoostStrength(strength: Short) {
-        bassBoost?.setStrength(strength)
+        try {
+            bassBoost?.setStrength(strength)
+        } catch (t: Throwable) {
+            Log.e(TAG, "setBassBoostStrength failed", t)
+        }
     }
 
     fun setVirtualizerStrength(strength: Short) {
-        virtualizer?.setStrength(strength)
+        try {
+            virtualizer?.setStrength(strength)
+        } catch (t: Throwable) {
+            Log.e(TAG, "setVirtualizerStrength failed", t)
+        }
     }
 
     fun setReverbPreset(preset: Short) {
-        presetReverb?.preset = preset
+        try {
+            presetReverb?.preset = preset
+        } catch (t: Throwable) {
+            Log.e(TAG, "setReverbPreset failed", t)
+        }
+    }
+
+    private inline fun safeRelease(label: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (t: Throwable) {
+            Log.e(TAG, "$label release failed", t)
+        }
     }
 }
