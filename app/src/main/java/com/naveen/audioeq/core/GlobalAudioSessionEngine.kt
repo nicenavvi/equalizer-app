@@ -25,6 +25,11 @@ class GlobalAudioSessionEngine {
     companion object {
         private const val TAG = "GlobalAudioEngine"
         private const val GLOBAL_SESSION_ID = 0
+
+        // ఎఫెక్ట్ priority ని 0 నుండి పెంచితే, OS మన ఎఫెక్ట్‌కి ఎక్కువ ప్రాధాన్యత
+        // ఇచ్చి సరిగ్గా apply చేసే అవకాశం పెరుగుతుంది. priority ఎక్కువైతే,
+        // అదే సెషన్‌లో వేరే యాప్ ఎఫెక్ట్ తో conflict వచ్చినప్పుడు మనదే గెలుస్తుంది.
+        private const val EFFECT_PRIORITY = 100
     }
 
     private var equalizer: Equalizer? = null
@@ -50,7 +55,7 @@ class GlobalAudioSessionEngine {
 
         // ---- Equalizer ----
         try {
-            val eq = Equalizer(0, GLOBAL_SESSION_ID)
+            val eq = Equalizer(EFFECT_PRIORITY, GLOBAL_SESSION_ID)
             eq.enabled = true
             equalizer = eq
             anySucceeded = true
@@ -61,7 +66,7 @@ class GlobalAudioSessionEngine {
 
         // ---- BassBoost ----
         try {
-            val bb = BassBoost(0, GLOBAL_SESSION_ID)
+            val bb = BassBoost(EFFECT_PRIORITY, GLOBAL_SESSION_ID)
             bb.enabled = true
             bassBoost = bb
             anySucceeded = true
@@ -72,7 +77,7 @@ class GlobalAudioSessionEngine {
 
         // ---- Virtualizer ----
         try {
-            val vr = Virtualizer(0, GLOBAL_SESSION_ID)
+            val vr = Virtualizer(EFFECT_PRIORITY, GLOBAL_SESSION_ID)
             vr.enabled = true
             virtualizer = vr
             anySucceeded = true
@@ -83,7 +88,7 @@ class GlobalAudioSessionEngine {
 
         // ---- PresetReverb ----
         try {
-            val pr = PresetReverb(0, GLOBAL_SESSION_ID)
+            val pr = PresetReverb(EFFECT_PRIORITY, GLOBAL_SESSION_ID)
             pr.enabled = true
             presetReverb = pr
             anySucceeded = true
